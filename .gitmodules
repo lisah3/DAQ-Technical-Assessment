@@ -1,0 +1,3 @@
+[submodule "dbcppp"]
+	path = firmware/external/dbcppp
+	url = https://github.com/xR3b0rn/dbcppp.git

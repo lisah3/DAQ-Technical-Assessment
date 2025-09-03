@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.22)
 
 project(firmware)
 
+add_subdirectory(${CMAKE_SOURCE_DIR}/external/dbcppp)
+
+
 add_subdirectory(solution)
 
 add_custom_target(clean-all
