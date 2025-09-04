@@ -1,8 +1,57 @@
-Use this file to write your answer to Stage 2 of the firmware tasks.
+Use this file to write your answer to Stage 2 of the firmware tasks.    
 
 CAN
-Q1:
+Q1: What are the advantages and disadvantages of the CAN protocol compared to other protocols such as USB, PCIE, SPI etc?
+    Advantages: 
+        1. Simple and low-cost wiring: in CAN, all ECUs are connected via a single two-wire bus. Instead of having dedicated wires between each each (e.g. SPI), this reduces potential errors and costs. 
+        2. Easy diagnostics: Since all ECUs are connected on the same bus, this provides one point of entry for all ECUs, allowing for easy diagnostics, data logging and config. 
+        3. Robust towards EMI: differential signal is robust against environmental noise since EMI affects both lines equally. Other protocols such as USB are less robust against noise. 
+        4. Maintains data integrity and improves efficiency: Arbitration prioritises critical messages while lower-priority messages retry later. This prevents collisions and fills the gaps of the CAN bus bandwidth.
+    Disadvantages: 
+        1. Low bandwidth: Classic CAN supports up to 1Mbps, which is far slower than other protocols, such as USB (hundreds of Mpbs), PCle (GBps), SPI (tens of Mbps). 
+        2. Small payload: CAN is limited to 8 bytes per frame, while other protocols having much larger payloads. 
+        3. Bus congestion: All ECUs sharing the same bus means low-priority messages can be delayed. 
 
-Q2:
+Q2: Why would Redback Racing's Embedded Systems, Powertrain, DAQ (Data Acquisition), and Autonomous Vehicles (AV) departments specifically choose CAN over other protocols?
+    Central Design Requirements for a Student EV and Why CAN Fits
+    1. Safety and reliability: 
+        - CAN’s arbitration mechanism ensures that critical messages (e.g., motor overtemp, brake status, emergency shutdown) are always delivered first
+        - Built-in error detection and retransmission protect against EMI from high-voltage power electronics, which is a constant in an electric race car
+    2. Reduced complexity and costs: 
+        - CAN requires only a single twisted pair to connect all ECUs
+        - This reduces wiring weight, potential for wiring faults, and hardware costs 
+        - Ideal for student team with limited time and budget 
+    3. Modularity
+        - CAN makes it easy to add, remove, swap subsystems without having to redesign wiring harness
+        - No need for a central host (unlike USB's host and SPI's master)
+    CAN’s Disadvantages, Impacts and Mitigations
+    1. Low bandwidth: 
+        Having low bandwidth means CAN will not be suitable for large data streams such as camera feeds. However, this can be mitigated by using parallel higher-speed connections when needed. 
+        Most importantly, CAN's reliability compared to other protocols makes it ideal for critical signals such as temperatures and pedal position, where reliability is much more important than bandwidth. 
+    2. Small payload:
+        Having smaller payloads means larger signals must be split across multiple frames. This can be mitigated using thoughtful design.
+
+    To summarise, CAN directly addresses the most important design requirements more effectively than other protocols. While it does have its disadvantages, they can be mitigated relatively easily. 
 
 STM32 Chip Selection
+Based on the minimum requirements (3 CAN buses, ethernet support, at least 3 A/D converters, USB support, 12 16-bit timers, flash size of 2048kB), I was able to narrow the search down to 21 chips. 
+Then using the compare feature, I pinpointed a number of distinguishing criteria amongst the 21 chips: 
+- Package (form factor); 
+- Max operating temperature 
+- Number of A/D coverter channels; 
+- High current I/Os.
+
+For form factor, amongst the 21 short-listed chips, the most popular and well-documented are LQFP-100 and LQFP-144, with LQFP being the most widely documented. 
+This leaves 6 candidates: STM32F765VI, STM32F767VI, STM32F777VI (LQFP-100); and STM32F765ZI, STM32F767ZI, STM32F777ZI (LQFP-144). 
+
+If maximum operating temperature is of major concern (more info needed, such as position of DAQ module on the vehicle), the STM32F765ZI would be the best choice, 
+having the LQFP-144 footprint as well as a maximum operating temperature of 105 degrees Celsius. Otherwise, the STM32F767ZI would be a great choice too with 
+max operating temperature of 85 degrees Celsius. 
+
+Some further comparisons between the STM32F765ZI and the STM32F767ZI: 
+- Both have the same power requirements, drawing around 90 mA at 216 MHz; 
+- Both at similar price points, with STM32F765ZI costing around 12 to 14 dollars, while the STM32F767ZI is around 13 dollars; 
+- The STM32F767ZI has graphics-oriented extras (TFT controller, JPEG) which could be useful for processing images
+
+In summary, the STM32F765ZI should be sufficient. However, if maximum operating temperature is not of particular concern, 
+and graphics is valued for purposes such as data visualisation, the STM32F767ZI would be the right choice. 
