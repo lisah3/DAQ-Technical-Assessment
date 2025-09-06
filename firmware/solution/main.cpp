@@ -2,6 +2,7 @@
 #include <fstream>
 #include <regex>
 #include <string>
+#include <string_view>
 #include <cstdint>
 #include <iomanip>
 #include <vector>
@@ -12,6 +13,7 @@
 
 #include <array>
 #include <algorithm>
+#include <optional>
 
 class CanFrame {
 public:
@@ -24,56 +26,186 @@ public:
     // constructor
     CanFrame(double ts_, std::string iface_, uint32_t id_, std::vector<uint8_t> data_)
         : ts(ts_), iface(std::move(iface_)), id(id_), data(std::move(data_)) {}
-
-    // pretty-printer for raw frame line (debugging/visibility)
-    void print() const {
-        std::cout << std::fixed << std::setprecision(6)
-                  << ts << " " << iface
-                  << " ID=0x" << std::hex << std::uppercase << id << std::dec
-                  << " DATA:";
-        for (auto b : data) {
-            std::cout << " "
-                      << std::hex << std::setw(2) << std::setfill('0')
-                      << static_cast<int>(b) << std::dec;
-        }
-        std::cout << "\n";
-    }
 };
 
+class BusMap {
+public:
+    // Add all messages from one DBC network into this bus map
+    void add_network(const dbcppp::INetwork& net) {
+        for (const dbcppp::IMessage& msg : net.Messages()) {
+            idmap_.emplace(msg.Id(), &msg);
+        }
+    }
+
+    // Lookup a message by CAN ID
+    const dbcppp::IMessage* find(uint32_t id) const {
+        auto it = idmap_.find(id);
+        return (it != idmap_.end()) ? it->second : nullptr;
+    }
+
+    // For debugging/inspection
+    void dump(const std::string& iface) const {
+        std::cout << iface << " bus map:\n";
+        for (auto& [id, msg] : idmap_) {
+            std::cout << "  0x" << std::hex << id << " → " 
+                      << msg->Name() << std::dec << "\n";
+        }
+    }
+
+private:
+    std::unordered_map<uint32_t, const dbcppp::IMessage*> idmap_;
+};
+
+struct DecodedSignal {
+    std::string name;
+    double value;
+};
+
+
+// function signatures
+std::optional<CanFrame> parse_frame(const std::string& line);
+std::array<uint8_t, 8> pad_payload_8(const std::vector<uint8_t>& data);
+std::string iface_for_dbc_path(std::string_view path);
+std::vector<std::unique_ptr<dbcppp::INetwork>>
+load_networks(const std::vector<std::string>& dbc_paths,
+              std::vector<std::string>& out_ifaces);
+std::unordered_map<std::string, BusMap>
+build_bus_maps(const std::vector<std::unique_ptr<dbcppp::INetwork>>& nets,
+               const std::vector<std::string>& ifaces);
+std::string format_decoded_line(double ts, const std::string& sigName,
+                                double physValue);
+std::vector<DecodedSignal> decode_signals(const dbcppp::IMessage* msg,
+                                          const CanFrame& frame);
+std::ifstream open_input_file(const std::string& path);
+std::ofstream open_output_file(const std::string& path);
+
+
 int main() {
-    // open input file dump.log
-    std::ifstream in("dump.log");   // lives at /app/dump.log in your container
-    if (!in) {
-        std::cerr << "Failed to open dump.log\n";
+    // open files
+    std::ifstream in;
+    std::ofstream out;
+    try {
+        in  = open_input_file("dump.log");
+        out = open_output_file("output.txt");
+    } catch (const std::exception& e) {
+        std::cerr << e.what() << "\n";
         return 1;
     }
 
-    // --- added: open output file ---
-    std::ofstream out("output.txt");
-    if (!out) {
-        std::cerr << "Failed to open output.txt for writing\n";
-        return 1;
-    }
-    // --------------------------------
+    // load dbc networks
+    std::vector<std::string> dbc_paths = {
+    "dbc-files/ControlBus.dbc",
+    "dbc-files/SensorBus.dbc",
+    "dbc-files/TractiveBus.dbc"
+    };
+    std::vector<std::string> net_ifaces;
+    auto nets = load_networks(dbc_paths, net_ifaces);
 
+    // build one ID->message map per interface
+    auto busMaps = build_bus_maps(nets, net_ifaces);
 
-    // Regex to parse lines like: (timestamp) iface HEX_CAN_ID#HEX_PAYLOAD
-    std::regex rx(R"(\((\d+\.\d+)\)\s+(\S+)\s+([0-9A-Fa-f]+)#([0-9A-Fa-f]*))");
+    // Read the log line-by-line, parse fields, convert payload hex->bytes, then decode
     std::string line;
 
-    // Load all DBC networks 
+    while (std::getline(in, line)) {
+        auto maybeFrame = parse_frame(line);
+        if (!maybeFrame) continue;
+        const CanFrame& frame = *maybeFrame; 
+
+        auto busIt = busMaps.find(frame.iface);
+        if (busIt != busMaps.end()) {
+            const dbcppp::IMessage* msg = busIt->second.find(frame.id);
+            if (msg) {
+                auto decoded = decode_signals(msg, frame);
+                for (const auto& sig : decoded) {
+                    out << format_decoded_line(frame.ts, sig.name, sig.value) << "\n";
+                }
+            }
+        }
+    }
+
+    out.close();
+    return 0;
+}
+
+
+std::ofstream open_output_file(const std::string& path) {
+    std::ofstream out(path);
+    if (!out) {
+        throw std::runtime_error("Failed to open output file: " + path);
+    }
+    return out;
+}
+
+
+std::ifstream open_input_file(const std::string& path) {
+    std::ifstream in(path);
+    if (!in) {
+        throw std::runtime_error("Failed to open input file: " + path);
+    }
+    return in;
+}
+
+
+std::vector<DecodedSignal> decode_signals(const dbcppp::IMessage* msg,
+                                          const CanFrame& frame)
+{
+    // pad to 8 bytes once, inside this function
+    auto payload8 = pad_payload_8(frame.data);
+    const uint8_t* bytes = payload8.data();
+
+    std::vector<DecodedSignal> decoded;
+    for (const dbcppp::ISignal& sig : msg->Signals()) {
+        const dbcppp::ISignal* mux_sig = msg->MuxSignal();
+        const bool selected_mux =
+            sig.MultiplexerIndicator() != dbcppp::ISignal::EMultiplexer::MuxValue ||
+            (mux_sig && mux_sig->Decode(bytes) == sig.MultiplexerSwitchValue());
+
+        if (selected_mux) {
+            const double phys = sig.RawToPhys(sig.Decode(bytes));
+            decoded.push_back({sig.Name(), phys});
+        }
+    }
+    return decoded;
+}
+
+
+std::string format_decoded_line(double ts,
+                                const std::string& sigName,
+                                double physValue)
+{
+    std::ostringstream oss;
+    oss << "(" << std::fixed << std::setprecision(6)
+        << ts << "): " << sigName << ": " << std::defaultfloat
+        << std::setprecision(6) << physValue;
+    return oss.str();
+}
+
+
+std::unordered_map<std::string, BusMap>
+build_bus_maps(const std::vector<std::unique_ptr<dbcppp::INetwork>>& nets,
+               const std::vector<std::string>& ifaces)
+{
+    std::unordered_map<std::string, BusMap> busMaps;
+    for (size_t i = 0; i < nets.size(); ++i) {
+        const auto& net   = nets[i];
+        const auto& iface = ifaces[i];
+        busMaps[iface].add_network(*net);
+    }
+    return busMaps;
+}
+
+
+std::vector<std::unique_ptr<dbcppp::INetwork>>
+load_networks(const std::vector<std::string>& dbc_paths,
+              std::vector<std::string>& out_ifaces)
+{
     std::vector<std::unique_ptr<dbcppp::INetwork>> nets;
+    nets.reserve(dbc_paths.size());
+    out_ifaces.clear();
+    out_ifaces.reserve(dbc_paths.size());
 
-    // per-bus lookup tables and DBC→iface bookkeeping 
-    std::vector<std::string> net_ifaces;
-    std::unordered_map<std::string, std::unordered_map<uint32_t, const dbcppp::IMessage*>> bus2id2msg;
-
-    for (const char* path : {
-            "dbc-files/ControlBus.dbc",
-            "dbc-files/SensorBus.dbc",
-            "dbc-files/TractiveBus.dbc"
-        })
-    {
+    for (const std::string& path : dbc_paths) {
         std::ifstream f(path);
         if (!f) {
             std::cerr << "Failed to open DBC: " << path << "\n";
@@ -85,89 +217,59 @@ int main() {
             continue;
         }
 
-        // choose interface for this DBC by its filename 
-        std::string ifaceForDbc = "can0";
-        std::string spath = path;
-        if      (spath.find("Sensor")   != std::string::npos) ifaceForDbc = "can1";
-        else if (spath.find("Tractive") != std::string::npos) ifaceForDbc = "can2";
-
+        out_ifaces.push_back(iface_for_dbc_path(path));
         nets.push_back(std::move(net));
+    }
+    return nets;
+}
 
-        // remember which iface this network belongs to
-        net_ifaces.push_back(ifaceForDbc);
+
+std::string iface_for_dbc_path(std::string_view path) {
+    // default
+    std::string iface = "can0";
+    if (path.find("Sensor")   != std::string_view::npos) iface = "can1";
+    if (path.find("Tractive") != std::string_view::npos) iface = "can2";
+    return iface;
+}
+
+
+std::array<uint8_t, 8> pad_payload_8(const std::vector<uint8_t>& data) {
+    std::array<uint8_t, 8> payload{}; // zero-initialized
+    const size_t n = std::min<size_t>(data.size(), payload.size());
+    std::copy_n(data.begin(), n, payload.begin());
+    return payload;
+}
+
+
+std::optional<CanFrame> parse_frame(const std::string& line) {
+    // Regex to parse lines like: (timestamp) iface HEX_CAN_ID#HEX_PAYLOAD
+    static const std::regex rx(R"(\((\d+\.\d+)\)\s+(\S+)\s+([0-9A-Fa-f]+)#([0-9A-Fa-f]*))");
+
+    std::smatch m;
+    if (!std::regex_search(line, m, rx)) {
+        return std::nullopt;   // invalid format
     }
 
-    // build one ID->message map *per* interface (bus) ---
-    for (size_t i = 0; i < nets.size(); ++i) {
-        const auto& net   = nets[i];
-        const auto& iface = net_ifaces[i];
-        auto& idmap = bus2id2msg[iface];
-        for (const dbcppp::IMessage& msg : net->Messages()) {
-            idmap.emplace(msg.Id(), &msg);
-        }
+    const double ts = std::stod(m[1].str());
+    const std::string iface = m[2].str();
+    const uint32_t id = static_cast<uint32_t>(
+        std::stoul(m[3].str(), nullptr, 16)
+    );
+    const std::string raw_data = m[4].str();
+
+    if (raw_data.size() % 2 != 0) {
+        return std::nullopt;   // malformed payload
     }
 
-    // Read the log line-by-line, parse fields, convert payload hex->bytes, then decode.
-    while (std::getline(in, line)) {
-        // parse dump.log for ts, iface, id, and data
-        std::smatch m;
-        if (!std::regex_search(line, m, rx)) continue;
-
-        const double     ts    = std::stod(m[1].str());
-        const std::string iface = m[2].str();
-        const uint32_t   id    = static_cast<uint32_t>(std::stoul(m[3].str(), nullptr, 16));
-        const std::string raw_data = m[4].str();
-
-        if (raw_data.size() % 2 != 0) continue; // skip malformed payloads
-
-         // Convert hex data string to bytes
-        std::vector<uint8_t> data;
-        data.reserve(raw_data.size() / 2);
-        for (size_t i = 0; i < raw_data.size(); i += 2) {
-            uint8_t byte = static_cast<uint8_t>(
-                std::stoul(raw_data.substr(i, 2), nullptr, 16)
-            );
-            data.push_back(byte);
-        }
-
-        // Wrap parsed values into a CanFrame object, print the raw frame
-        CanFrame frame(ts, iface, id, std::move(data));
-        // frame.print();
-
-        // pick the right per-bus table using the frame's iface 
-        auto busIt = bus2id2msg.find(frame.iface);
-        if (busIt != bus2id2msg.end()) {
-            const auto& idmap = busIt->second;
-            auto it = idmap.find(frame.id);
-            if (it != idmap.end()) {
-                const dbcppp::IMessage* msg = it->second;
-
-                // Optional: print message name (kept simple)
-                // std::cout << "  MSG=" << msg->Name() << "\n";
-
-                // make zero-padded 8-byte buffer for decoding
-                std::array<uint8_t, 8> payload8{}; // zero-initialized
-                const size_t n = std::min<size_t>(frame.data.size(), payload8.size());
-                std::copy_n(frame.data.begin(), n, payload8.begin());
-                const uint8_t* bytes = payload8.data();
-
-                // Iterate all signals; respect multiplexing rules before decoding
-                for (const dbcppp::ISignal& sig : msg->Signals()) {
-                    const dbcppp::ISignal* mux_sig = msg->MuxSignal();
-                    const bool selected_mux =
-                        sig.MultiplexerIndicator() != dbcppp::ISignal::EMultiplexer::MuxValue ||
-                        (mux_sig && mux_sig->Decode(bytes) == sig.MultiplexerSwitchValue());
-
-                    if (selected_mux) {
-                        const double phys = sig.RawToPhys(sig.Decode(bytes));    
-                        out << "(" << std::fixed << std::setprecision(6) 
-                        << ts << "): " << sig.Name() << ": " << std::defaultfloat 
-                        << std::setprecision(6) << phys << "\n";
-                    }
-                }
-            }
-        }
+    // Convert hex data string to bytes
+    std::vector<uint8_t> data;
+    data.reserve(raw_data.size() / 2);
+    for (size_t i = 0; i < raw_data.size(); i += 2) {
+        uint8_t byte = static_cast<uint8_t>(
+            std::stoul(raw_data.substr(i, 2), nullptr, 16)
+        );
+        data.push_back(byte);
     }
-    out.close();
-    return 0;
+
+    return CanFrame(ts, iface, id, std::move(data));
 }
