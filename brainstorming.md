@@ -206,4 +206,14 @@ Main.cpp needs to be separated out into function to conduct unit tests.
 - turn functions into a small library with can_utils.hpp and can_utils.cpp
 
 
-#### Actually writing tests 
+#### Writing tests
+Aiming to test: 
+1. Correct parsing of CAN frames
+    Tested through  ```parse_frame``` function. Tests 4-byte payload, 8-byte payload, zero-length payload. Tested against expected output provided.  
+2. Proper extraction of sensor values
+    Tested ```decode_signals``` function on first line of dump.log. 
+    **Point of improvement: ** ```load_networks```, ```build_bus_maps``` functions also tested as part of ```decode_signals``` test; would be better to write tests for those functions separately. 
+3. Handling of multiple DBC files defining the same CAN ID
+4. Endianess, bit-length, and scaling calculations
+5. Error handling for invalid log entries
+    Tested odd-length payload (should be rejected in ```parse_frame```). 
