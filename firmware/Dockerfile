@@ -9,11 +9,9 @@ RUN apt-get update && \
     wget autoconf libtool git make g++ valgrind \
     cmake can-utils
 
-# --- added: deps needed by dbcppp ---
+# deps needed by dbcppp
 RUN apt-get update && apt-get install -y \
     libboost-all-dev libxml2-dev pkg-config
-# ------------------------------------
-
 
 COPY . .
 
@@ -21,10 +19,8 @@ RUN find . -name "CMakeCache.txt" -delete
 
 RUN cd build/ && rm CMakeCache.txt || true
 
-# --- added: ensure build dir exists for the next steps ---
+# ensure build dir exists for the next steps
 RUN mkdir -p build
-# --------------------------------------------------------
-
 
 RUN cd build/ && cmake ..
 

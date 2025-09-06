@@ -173,7 +173,7 @@ TEST_CASE("dummy function returns 0", "[dummy]") {
 }
 ```
 
-#### Unit testing workflow notes
+#### Unit testing workflow
 to "hop into" docker container: 
 ``` bash
 docker compose run --rm -it --entrypoint /bin/bash firmware
@@ -197,3 +197,13 @@ For now, every time test_sample.cpp is changed, docker container must be rebuilt
 ``` bash
 docker compose up --build
 ```
+
+#### Refactoring main.cpp
+Main.cpp needs to be separated out into function to conduct unit tests. 
+- important processes ```parse_frame```, ```load_networks```, ```decode_signals``` were made into functions to improve readability
+- smaller helper functions were added and integrated into bigger functions (```pad_payload_8```, ```format_decoded_line```)
+- class BusMap added in addition to CanFrame to facilitate unique bus map for each dbcfile
+- turn functions into a small library with can_utils.hpp and can_utils.cpp
+
+
+#### Actually writing tests 
